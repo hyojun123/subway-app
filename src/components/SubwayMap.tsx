@@ -18,7 +18,7 @@ const getLabelPos = (
   station: Station,
   i: number,
   stations: Station[]
-): { lx: number; ly: number; anchor: string } => {
+): { lx: number; ly: number; anchor: "start" | "middle" | "end" } => {
   const prev = stations[Math.max(0, i - 1)];
   const next = stations[Math.min(stations.length - 1, i + 1)];
   const dx = Math.abs(next.x - prev.x);
