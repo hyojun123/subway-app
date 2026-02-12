@@ -107,17 +107,17 @@ const Home = () => {
           </div>
         )}
 
-        {/* 열차 수 표시 */}
-        {trains.length > 0 && (
-          <div className="absolute bottom-4 left-4 bg-gray-800/80 backdrop-blur-sm rounded-lg px-3 py-1.5 text-xs text-gray-300">
-            운행중 {trains.length}대
-          </div>
-        )}
-
-        {/* 마지막 업데이트 시간 */}
-        {lastUpdate && (
-          <div className="absolute bottom-4 right-4 bg-gray-800/80 backdrop-blur-sm rounded-lg px-3 py-1.5 text-xs text-gray-400">
-            {lastUpdate}
+        {/* 하단 정보 바 */}
+        {(trains.length > 0 || lastUpdate) && (
+          <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between bg-gray-800/80 backdrop-blur-sm rounded-xl px-4 py-2">
+            {trains.length > 0 ? (
+              <span className="text-xs text-gray-300 font-medium">
+                운행중 <span className="text-white">{trains.length}</span>대
+              </span>
+            ) : <span />}
+            {lastUpdate && (
+              <span className="text-xs text-gray-500">{lastUpdate}</span>
+            )}
           </div>
         )}
 

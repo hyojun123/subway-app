@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { Station, TrainMarkerData } from "@/lib/types";
 import { SVG_WIDTH, SVG_HEIGHT } from "@/lib/constants";
 import TrainMarker from "./TrainMarker";
@@ -35,6 +35,22 @@ const getLabelPos = (
   return { lx: station.x, ly: station.y - 12, anchor: "middle" };
 };
 
+/** 역 좌표의 바운딩 박스 계산 */
+const getBounds = (stations: Station[]) => {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const s of stations) {
+    if (s.x < minX) minX = s.x;
+    if (s.y < minY) minY = s.y;
+    if (s.x > maxX) maxX = s.x;
+    if (s.y > maxY) maxY = s.y;
+  }
+  return { minX, minY, maxX, maxY };
+};
+
+/** 모바일 판별 (SSR 안전) */
+const isMobile = () =>
+  typeof window !== "undefined" && window.innerWidth < 768;
+
 const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMapProps) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [selectedTrain, setSelectedTrain] = useState<TrainMarkerData | null>(null);
@@ -44,6 +60,10 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
   const lastTouchDistance = useRef<number | null>(null);
   const viewBoxRef = useRef(viewBox);
   viewBoxRef.current = viewBox;
+
+  // 줌 비율 계산 (1 = 기본, 작을수록 확대)
+  const zoomRatio = viewBox.w / SVG_WIDTH;
+  const showLabels = zoomRatio < 1.15;
 
   // 역 사이 연결선 생성 (polyline)
   const linePath = stations.map((s) => `${s.x},${s.y}`).join(" ");
@@ -69,8 +89,12 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
     (e: React.PointerEvent) => {
       if (!isPanning) return;
       const vb = viewBoxRef.current;
-      const dx = (e.clientX - panStartRef.current.x) * (vb.w / SVG_WIDTH);
-      const dy = (e.clientY - panStartRef.current.y) * (vb.h / SVG_HEIGHT);
+      const svg = svgRef.current;
+      const rect = svg?.getBoundingClientRect();
+      const scaleX = vb.w / (rect?.width || SVG_WIDTH);
+      const scaleY = vb.h / (rect?.height || SVG_HEIGHT);
+      const dx = (e.clientX - panStartRef.current.x) * scaleX;
+      const dy = (e.clientY - panStartRef.current.y) * scaleY;
       setViewBox((v) => ({ ...v, x: v.x - dx, y: v.y - dy }));
       panStartRef.current = { x: e.clientX, y: e.clientY };
     },
@@ -132,10 +156,31 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
     };
   }, []);
 
-  // 호선 변경 시 viewBox 리셋
+  // 호선 변경 시: 모바일이면 노선에 맞춰 확대, 데스크톱이면 전체 보기
   useEffect(() => {
-    setViewBox({ x: 0, y: 0, w: SVG_WIDTH, h: SVG_HEIGHT });
     setSelectedTrain(null);
+
+    if (stations.length === 0) return;
+
+    if (isMobile()) {
+      const { minX, minY, maxX, maxY } = getBounds(stations);
+      const padding = 60;
+      const contentW = maxX - minX + padding * 2;
+      const contentH = maxY - minY + padding * 2;
+      // 모바일: 너비 기준 50% 영역만 보여주기 (약 2배 확대)
+      const mobileW = contentW * 0.55;
+      const mobileH = contentH * 0.55;
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      setViewBox({
+        x: cx - mobileW / 2,
+        y: cy - mobileH / 2,
+        w: mobileW,
+        h: mobileH,
+      });
+    } else {
+      setViewBox({ x: 0, y: 0, w: SVG_WIDTH, h: SVG_HEIGHT });
+    }
   }, [stations]);
 
   return (
@@ -150,7 +195,7 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
       onClick={handleBgClick}
     >
       {/* 배경 */}
-      <rect width={SVG_WIDTH} height={SVG_HEIGHT} fill="transparent" />
+      <rect width={SVG_WIDTH * 2} height={SVG_HEIGHT * 2} x={-SVG_WIDTH / 2} y={-SVG_HEIGHT / 2} fill="transparent" />
 
       {/* 노선 라인 */}
       <polyline
@@ -176,16 +221,18 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
               stroke={lineColor}
               strokeWidth={2.5}
             />
-            <text
-              x={lx}
-              y={ly}
-              textAnchor={anchor}
-              fill="#d1d5db"
-              fontSize={10}
-              pointerEvents="none"
-            >
-              {station.name}
-            </text>
+            {showLabels && (
+              <text
+                x={lx}
+                y={ly}
+                textAnchor={anchor}
+                fill="#d1d5db"
+                fontSize={10}
+                pointerEvents="none"
+              >
+                {station.name}
+              </text>
+            )}
           </g>
         );
       })}

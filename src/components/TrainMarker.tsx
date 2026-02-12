@@ -27,6 +27,8 @@ const TrainMarker = memo(({ train, color, onSelect }: TrainMarkerProps) => {
         onSelect(train);
       }}
     >
+      {/* 터치 영역 확대 (투명) */}
+      <circle r={16} fill="transparent" />
       {/* 열차 본체 */}
       <circle
         r={7}
