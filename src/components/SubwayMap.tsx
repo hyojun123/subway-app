@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import type { Station, TrainMarkerData } from "@/lib/types";
 import { SVG_WIDTH, SVG_HEIGHT } from "@/lib/constants";
 import TrainMarker from "./TrainMarker";
@@ -25,18 +25,16 @@ const getLabelPos = (
   const dy = Math.abs(next.y - prev.y);
 
   if (dy > dx * 1.5) {
-    // 수직 구간: 라벨을 좌/우로 배치
     if (station.x > SVG_WIDTH / 2) {
       return { lx: station.x + 14, ly: station.y + 4, anchor: "start" };
     }
     return { lx: station.x - 14, ly: station.y + 4, anchor: "end" };
   }
-  // 수평 구간: 라벨을 위에 배치
   return { lx: station.x, ly: station.y - 12, anchor: "middle" };
 };
 
-/** 역 좌표의 바운딩 박스 계산 */
-const getBounds = (stations: Station[]) => {
+/** 역 좌표의 바운딩 박스 → 패딩 포함 전체 뷰 */
+const getFullView = (stations: Station[]) => {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const s of stations) {
     if (s.x < minX) minX = s.x;
@@ -44,24 +42,27 @@ const getBounds = (stations: Station[]) => {
     if (s.x > maxX) maxX = s.x;
     if (s.y > maxY) maxY = s.y;
   }
-  return { minX, minY, maxX, maxY };
+  const pad = 50;
+  return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
 };
 
-/** 모바일 판별 (SSR 안전) */
-const isMobile = () =>
-  typeof window !== "undefined" && window.innerWidth < 768;
+const ZOOM_SCALE = 2.5; // 클릭 시 확대 배율
+const PAN_THRESHOLD = 5; // 이 이상 움직이면 팬으로 판정 (px)
 
 const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMapProps) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [selectedTrain, setSelectedTrain] = useState<TrainMarkerData | null>(null);
   const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: SVG_WIDTH, h: SVG_HEIGHT });
+  const [isZoomed, setIsZoomed] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const panStartRef = useRef({ x: 0, y: 0 });
+  const panDistRef = useRef(0);
   const lastTouchDistance = useRef<number | null>(null);
   const viewBoxRef = useRef(viewBox);
+  const fullViewRef = useRef({ x: 0, y: 0, w: SVG_WIDTH, h: SVG_HEIGHT });
   viewBoxRef.current = viewBox;
 
-  // 줌 비율 계산 (1 = 기본, 작을수록 확대)
+  // 줌 비율 계산
   const zoomRatio = viewBox.w / SVG_WIDTH;
   const showLabels = zoomRatio < 1.15;
 
@@ -75,27 +76,72 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
   }, []);
 
   const handleClose = useCallback(() => setSelectedTrain(null), []);
-  const handleBgClick = useCallback(() => setSelectedTrain(null), []);
+
+  /** 클릭 좌표를 SVG 좌표로 변환 */
+  const clientToSvg = useCallback((clientX: number, clientY: number) => {
+    const svg = svgRef.current;
+    if (!svg) return { svgX: 0, svgY: 0 };
+    const rect = svg.getBoundingClientRect();
+    const vb = viewBoxRef.current;
+    const svgX = vb.x + (clientX - rect.left) / rect.width * vb.w;
+    const svgY = vb.y + (clientY - rect.top) / rect.height * vb.h;
+    return { svgX, svgY };
+  }, []);
+
+  /** 배경 클릭: 토글 줌 */
+  const handleBgClick = useCallback((e: React.MouseEvent) => {
+    // 팬 동작이었으면 무시
+    if (panDistRef.current > PAN_THRESHOLD) return;
+
+    // 툴팁 닫기
+    if (selectedTrain) {
+      setSelectedTrain(null);
+      return;
+    }
+
+    const full = fullViewRef.current;
+
+    if (!isZoomed) {
+      // 클릭 위치 중심으로 확대
+      const { svgX, svgY } = clientToSvg(e.clientX, e.clientY);
+      const newW = full.w / ZOOM_SCALE;
+      const newH = full.h / ZOOM_SCALE;
+      setViewBox({
+        x: svgX - newW / 2,
+        y: svgY - newH / 2,
+        w: newW,
+        h: newH,
+      });
+      setIsZoomed(true);
+    } else {
+      // 전체 보기로 복귀
+      setViewBox(full);
+      setIsZoomed(false);
+    }
+  }, [isZoomed, selectedTrain, clientToSvg]);
 
   // 마우스/터치 팬
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.pointerType === "touch" || e.button === 0) {
       setIsPanning(true);
       panStartRef.current = { x: e.clientX, y: e.clientY };
+      panDistRef.current = 0;
     }
   }, []);
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent) => {
       if (!isPanning) return;
-      const vb = viewBoxRef.current;
+      const dx = e.clientX - panStartRef.current.x;
+      const dy = e.clientY - panStartRef.current.y;
+      panDistRef.current += Math.abs(dx) + Math.abs(dy);
+
       const svg = svgRef.current;
       const rect = svg?.getBoundingClientRect();
+      const vb = viewBoxRef.current;
       const scaleX = vb.w / (rect?.width || SVG_WIDTH);
       const scaleY = vb.h / (rect?.height || SVG_HEIGHT);
-      const dx = (e.clientX - panStartRef.current.x) * scaleX;
-      const dy = (e.clientY - panStartRef.current.y) * scaleY;
-      setViewBox((v) => ({ ...v, x: v.x - dx, y: v.y - dy }));
+      setViewBox((v) => ({ ...v, x: v.x - dx * scaleX, y: v.y - dy * scaleY }));
       panStartRef.current = { x: e.clientX, y: e.clientY };
     },
     [isPanning]
@@ -103,7 +149,7 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
 
   const handlePointerUp = useCallback(() => setIsPanning(false), []);
 
-  // 핀치 줌 & 휠 줌: passive: false로 등록하여 preventDefault 사용
+  // 핀치 줌 & 휠 줌
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
@@ -124,6 +170,7 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
             const cy = v.y + v.h / 2;
             return { x: cx - newW / 2, y: cy - newH / 2, w: newW, h: newH };
           });
+          setIsZoomed(true);
         }
         lastTouchDistance.current = distance;
       }
@@ -136,13 +183,27 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const scale = e.deltaY > 0 ? 1.1 : 0.9;
+
+      // 마우스 위치 중심으로 줌
+      const rect = svg.getBoundingClientRect();
+      const vb = viewBoxRef.current;
+      const mouseX = vb.x + (e.clientX - rect.left) / rect.width * vb.w;
+      const mouseY = vb.y + (e.clientY - rect.top) / rect.height * vb.h;
+
       setViewBox((v) => {
         const newW = Math.max(200, Math.min(SVG_WIDTH * 2, v.w * scale));
         const newH = Math.max(150, Math.min(SVG_HEIGHT * 2, v.h * scale));
-        const cx = v.x + v.w / 2;
-        const cy = v.y + v.h / 2;
-        return { x: cx - newW / 2, y: cy - newH / 2, w: newW, h: newH };
+        // 마우스 위치를 기준으로 줌
+        const ratioX = (mouseX - v.x) / v.w;
+        const ratioY = (mouseY - v.y) / v.h;
+        return {
+          x: mouseX - newW * ratioX,
+          y: mouseY - newH * ratioY,
+          w: newW,
+          h: newH,
+        };
       });
+      setIsZoomed(true);
     };
 
     svg.addEventListener("touchmove", onTouchMove, { passive: false });
@@ -156,102 +217,101 @@ const SubwayMap = ({ stations, trains, lineColor, isCircular = false }: SubwayMa
     };
   }, []);
 
-  // 호선 변경 시: 모바일이면 노선에 맞춰 확대, 데스크톱이면 전체 보기
+  // 호선 변경 시: 전체 보기로 리셋
   useEffect(() => {
     setSelectedTrain(null);
-
+    setIsZoomed(false);
     if (stations.length === 0) return;
-
-    if (isMobile()) {
-      const { minX, minY, maxX, maxY } = getBounds(stations);
-      const padding = 60;
-      const contentW = maxX - minX + padding * 2;
-      const contentH = maxY - minY + padding * 2;
-      // 모바일: 너비 기준 50% 영역만 보여주기 (약 2배 확대)
-      const mobileW = contentW * 0.55;
-      const mobileH = contentH * 0.55;
-      const cx = (minX + maxX) / 2;
-      const cy = (minY + maxY) / 2;
-      setViewBox({
-        x: cx - mobileW / 2,
-        y: cy - mobileH / 2,
-        w: mobileW,
-        h: mobileH,
-      });
-    } else {
-      setViewBox({ x: 0, y: 0, w: SVG_WIDTH, h: SVG_HEIGHT });
-    }
+    const full = getFullView(stations);
+    fullViewRef.current = full;
+    setViewBox(full);
   }, [stations]);
 
   return (
-    <svg
-      ref={svgRef}
-      viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
-      className="w-full h-full touch-none select-none"
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerLeave={handlePointerUp}
-      onClick={handleBgClick}
-    >
-      {/* 배경 */}
-      <rect width={SVG_WIDTH * 2} height={SVG_HEIGHT * 2} x={-SVG_WIDTH / 2} y={-SVG_HEIGHT / 2} fill="transparent" />
+    <div className="relative w-full h-full">
+      <svg
+        ref={svgRef}
+        viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
+        className="w-full h-full touch-none select-none"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+        onClick={handleBgClick}
+      >
+        {/* 배경 */}
+        <rect width={SVG_WIDTH * 2} height={SVG_HEIGHT * 2} x={-SVG_WIDTH / 2} y={-SVG_HEIGHT / 2} fill="transparent" />
 
-      {/* 노선 라인 */}
-      <polyline
-        points={linePath + circularClose}
-        fill="none"
-        stroke={lineColor}
-        strokeWidth={6}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        opacity={0.6}
-      />
-
-      {/* 역 노드 */}
-      {stations.map((station, i) => {
-        const { lx, ly, anchor } = getLabelPos(station, i, stations);
-        return (
-          <g key={`${station.name}-${i}`}>
-            <circle
-              cx={station.x}
-              cy={station.y}
-              r={5}
-              fill="#1f2937"
-              stroke={lineColor}
-              strokeWidth={2.5}
-            />
-            {showLabels && (
-              <text
-                x={lx}
-                y={ly}
-                textAnchor={anchor}
-                fill="#d1d5db"
-                fontSize={10}
-                pointerEvents="none"
-              >
-                {station.name}
-              </text>
-            )}
-          </g>
-        );
-      })}
-
-      {/* 열차 마커 */}
-      {trains.map((train, i) => (
-        <TrainMarker
-          key={`${train.trainNo}-${i}`}
-          train={train}
-          color={lineColor}
-          onSelect={handleSelect}
+        {/* 노선 라인 */}
+        <polyline
+          points={linePath + circularClose}
+          fill="none"
+          stroke={lineColor}
+          strokeWidth={6}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity={0.6}
         />
-      ))}
 
-      {/* 선택된 열차 툴팁 */}
-      {selectedTrain && (
-        <TrainTooltip train={selectedTrain} color={lineColor} onClose={handleClose} />
+        {/* 역 노드 */}
+        {stations.map((station, i) => {
+          const { lx, ly, anchor } = getLabelPos(station, i, stations);
+          return (
+            <g key={`${station.name}-${i}`}>
+              <circle
+                cx={station.x}
+                cy={station.y}
+                r={5}
+                fill="#1f2937"
+                stroke={lineColor}
+                strokeWidth={2.5}
+              />
+              {showLabels && (
+                <text
+                  x={lx}
+                  y={ly}
+                  textAnchor={anchor}
+                  fill="#d1d5db"
+                  fontSize={10}
+                  pointerEvents="none"
+                >
+                  {station.name}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {/* 열차 마커 */}
+        {trains.map((train, i) => (
+          <TrainMarker
+            key={`${train.trainNo}-${i}`}
+            train={train}
+            color={lineColor}
+            onSelect={handleSelect}
+          />
+        ))}
+
+        {/* 선택된 열차 툴팁 */}
+        {selectedTrain && (
+          <TrainTooltip train={selectedTrain} color={lineColor} onClose={handleClose} />
+        )}
+      </svg>
+
+      {/* 줌 상태 표시 & 축소 버튼 */}
+      {isZoomed && (
+        <button
+          onClick={() => {
+            setViewBox(fullViewRef.current);
+            setIsZoomed(false);
+            setSelectedTrain(null);
+          }}
+          className="absolute top-3 right-3 bg-gray-800/80 backdrop-blur-sm rounded-lg px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700/80 active:scale-95 transition-all"
+        >
+          전체 보기
+        </button>
       )}
-    </svg>
+    </div>
   );
 };
 
